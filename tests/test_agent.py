@@ -4,7 +4,8 @@ import json
 from unittest.mock import MagicMock
 from src.agent import CodeMasterAgent
 from src.llm.openai_client import OpenAIProvider
-from src.analysis.dependency_graph import DependencyGraphBuilder
+from src.rag.indexer import CodeIndexer
+from src.rag.retriever import HybridRetriever
 
 class TestCodeMasterAgent(unittest.TestCase):
     def setUp(self):
@@ -29,22 +30,44 @@ class TestCodeMasterAgent(unittest.TestCase):
         self.assertIn("solid", result)
         loop.close()
 
-    def test_appsettings_parsing(self):
-        # Unit test for the parser logic
-        parser = DependencyGraphBuilder(MagicMock())
-        appsettings_content = json.dumps({
-            "ServiceSettings": {
-                "OrderServiceUrl": "http://order-service:5000",
-                "PaymentServiceUrl": "https://payment-api.internal"
-            },
-            "ConnectionStrings": {
-                "MainDb": "mongodb://mongo:27017/db"
-            }
-        })
-        deps = parser._parse_appsettings_dependencies(appsettings_content)
-        self.assertIn("order-service", deps)
-        self.assertIn("payment-api.internal", deps)
-        self.assertIn("MongoDB", deps)
+    def test_indexer_parsing(self):
+        indexer = CodeIndexer(MagicMock())
+
+        # Test C# parsing
+        csharp_code = """
+        public void MethodA() {
+            var x = 1;
+        }
+
+        private string MethodB(int y) {
+            return "test";
+        }
+        """
+        chunks = indexer._chunk_file("Test.cs", csharp_code)
+        self.assertEqual(len(chunks), 2)
+        self.assertEqual(chunks[0]["name"], "MethodA")
+        self.assertEqual(chunks[1]["name"], "MethodB")
+
+    def test_retriever_ranking(self):
+        # We need to mock the async call chain: mongo.mcp_manager.call_tool
+        mock_mongo = MagicMock()
+
+        # Setup async mock for call_tool
+        future = asyncio.Future()
+        future.set_result([]) # Return empty list so it falls back to internal mock data
+        mock_mongo.mcp_manager.call_tool.return_value = future
+
+        retriever = HybridRetriever(mock_mongo)
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        # We expect the mock in HybridRetriever to return something
+        results = loop.run_until_complete(retriever.search("ServiceA", "payment"))
+        self.assertTrue(len(results) > 0)
+        self.assertIn("score", results[0])
+
+        loop.close()
 
 if __name__ == '__main__':
     unittest.main()

@@ -5,7 +5,8 @@ from src.mcp.client import MCPClientManager
 from src.gitlab.connector import GitLabConnector
 from src.db.connector import MongoDBConnector
 from src.analysis.dependency_graph import DependencyGraphBuilder
-from src.analysis.knowledge_base import KnowledgeBase
+from src.rag.indexer import CodeIndexer
+from src.rag.retriever import HybridRetriever
 from src.analysis.context_builder import ContextBuilder
 
 class CodeMasterAgent:
@@ -18,10 +19,13 @@ class CodeMasterAgent:
         self.gitlab = GitLabConnector(self.mcp_manager)
         self.mongo = MongoDBConnector(self.mcp_manager)
 
+        # Initialize RAG Pipeline
+        self.rag_indexer = CodeIndexer(self.mongo)
+        self.rag_retriever = HybridRetriever(self.mongo)
+
         # Initialize Analysis Engine
-        self.knowledge_base = KnowledgeBase(self.mongo)
         self.graph_builder = DependencyGraphBuilder(self.gitlab)
-        self.context_builder = ContextBuilder(self.gitlab, self.graph_builder, self.knowledge_base)
+        self.context_builder = ContextBuilder(self.gitlab, self.graph_builder, self.rag_retriever)
 
     async def initialize(self):
         """
@@ -32,13 +36,21 @@ class CodeMasterAgent:
         await self.mongo.initialize()
         print("[Agent] Ready.")
 
+    async def ingest_codebase(self, project_id: str, service_name: str, files: Dict[str, str]):
+        """
+        Trigger for Offline Indexing phase.
+        """
+        print(f"[Agent] Indexing service: {service_name}...")
+        await self.rag_indexer.ingest_service(project_id, service_name, files)
+        print("[Agent] Indexing completed.")
+
     async def run_code_review(self, project_id: str, mr_iid: int):
         """
-        Performs a code review for a specific Merge Request.
+        Performs a code review for a specific Merge Request using RAG.
         """
         print(f"[Agent] Starting Code Review for Project {project_id}, MR {mr_iid}...")
 
-        # 1. Build Context (includes Graph + KB chunks)
+        # 1. Build Context (includes Graph + Hybrid RAG chunks)
         context = await self.context_builder.build_context(project_id, mr_iid)
 
         # 2. Ask LLM
