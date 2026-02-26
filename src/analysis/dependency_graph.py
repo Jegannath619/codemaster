@@ -123,12 +123,12 @@ class DeterministicGraphBuilder:
                     if "ConnectionStrings" in key or "ConnectionString" in key:
                         pass # handled by value check below
 
-                # Check current level keys for connection strings
-                if isinstance(value, str):
-                    if "mongodb://" in value:
-                        deps.add("MongoDB")
-                    if "Server=" in value and "Database=" in value:
-                        deps.add("SQLServer")
+                    # Check current level keys for connection strings
+                    if isinstance(value, str):
+                        if "mongodb://" in value:
+                            deps.add("MongoDB")
+                        if "Server=" in value and "Database=" in value:
+                            deps.add("SQLServer")
 
             search_dict(data)
         except json.JSONDecodeError:

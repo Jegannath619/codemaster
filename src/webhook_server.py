@@ -2,18 +2,18 @@ from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
 import os
 import json
 from typing import Dict, Any
-from src.agent import CodeMasterAgent
+from src.agents.orchestrator import Orchestrator
 from src.llm.openai_client import OpenAIProvider
 
-app = FastAPI(title="Code Master Webhook Server")
+app = FastAPI(title="Agentic SDLC Webhook Server")
 
-# Initialize Agent (Single instance for now)
+# Initialize Orchestrator
 llm = OpenAIProvider()
-agent = CodeMasterAgent(llm)
+orchestrator = Orchestrator(llm)
 
 @app.on_event("startup")
 async def startup_event():
-    await agent.initialize()
+    await orchestrator.initialize()
 
 @app.post("/webhook")
 async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
@@ -65,7 +65,7 @@ async def process_push_event(payload: Dict[str, Any]):
             service_name = _extract_service_name(path)
             if service_name != "UnknownService":
                 # Fetch content
-                content = await agent.gitlab.get_file_content(project_id, path, ref=payload.get("checkout_sha"))
+                content = await orchestrator.gitlab.get_file_content(project_id, path, ref=payload.get("checkout_sha"))
                 if service_name not in modified_files:
                     modified_files[service_name] = {}
                 modified_files[service_name][path] = content
@@ -73,7 +73,7 @@ async def process_push_event(payload: Dict[str, Any]):
     # 2. Trigger Incremental Indexing per service
     for service_name, files in modified_files.items():
         print(f"[Webhook] Triggering incremental index for {service_name} ({len(files)} files)")
-        await agent.rag_indexer.ingest_changes(project_id, service_name, files)
+        await orchestrator.ingest_changes(project_id, service_name, files)
 
 async def process_mr_event(payload: Dict[str, Any]):
     """
@@ -86,7 +86,7 @@ async def process_mr_event(payload: Dict[str, Any]):
 
     if project_id and mr_iid:
         print(f"[Webhook] Triggering Code Review for MR {mr_iid}")
-        await agent.run_code_review(project_id, mr_iid)
+        await orchestrator.run_review(project_id, mr_iid)
 
 def _extract_service_name(filepath: str) -> str:
     # Reusing the simple heuristic from DependencyGraphBuilder

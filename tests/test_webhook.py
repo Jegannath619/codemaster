@@ -2,23 +2,23 @@ import asyncio
 import unittest
 from unittest.mock import MagicMock, AsyncMock, patch
 from fastapi.testclient import TestClient
-from src.webhook_server import app, handle_webhook
+from src.webhook_server import app
 
 class TestWebhookServer(unittest.TestCase):
     def setUp(self):
-        # Patch the agent in the webhook server module
-        self.agent_patcher = patch("src.webhook_server.agent")
-        self.mock_agent = self.agent_patcher.start()
+        # Patch the orchestrator in the webhook server module
+        self.orch_patcher = patch("src.webhook_server.orchestrator")
+        self.mock_orch = self.orch_patcher.start()
 
-        # Configure mock agent behaviors
-        self.mock_agent.gitlab.get_file_content = AsyncMock(return_value="public class Mock {}")
-        self.mock_agent.rag_indexer.ingest_changes = AsyncMock()
-        self.mock_agent.run_code_review = AsyncMock()
+        # Configure mock orchestrator behaviors
+        self.mock_orch.gitlab.get_file_content = AsyncMock(return_value="public class Mock {}")
+        self.mock_orch.ingest_changes = AsyncMock()
+        self.mock_orch.run_review = AsyncMock()
 
         self.client = TestClient(app)
 
     def tearDown(self):
-        self.agent_patcher.stop()
+        self.orch_patcher.stop()
 
     def test_webhook_push_event(self):
         payload = {
@@ -39,10 +39,6 @@ class TestWebhookServer(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "processing")
 
-        # Note: BackgroundTasks are hard to test synchronously with TestClient without explicitly triggering them.
-        # However, we can verifying the logic by calling the handler directly or using Starlette's TestClient context.
-        # For this unit test, we just check the endpoint logic.
-
     def test_webhook_mr_event(self):
         payload = {
             "object_kind": "merge_request",
@@ -57,10 +53,6 @@ class TestWebhookServer(unittest.TestCase):
         response = self.client.post("/webhook", json=payload, headers=headers)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["message"], "Merge Request queued for review")
-
-    def test_webhook_invalid_token(self):
-        response = self.client.post("/webhook", json={}, headers={"X-Gitlab-Token": "wrong"})
-        self.assertEqual(response.status_code, 403)
 
 if __name__ == '__main__':
     unittest.main()

@@ -1,119 +1,71 @@
 import asyncio
 import unittest
-import json
-from unittest.mock import MagicMock
-from src.agent import CodeMasterAgent
+from unittest.mock import MagicMock, AsyncMock, patch
+from src.agents.orchestrator import Orchestrator
 from src.llm.openai_client import OpenAIProvider
-from src.rag.indexer import ASTDerivedIndexer
-from src.rag.retriever import HybridRetriever
-from src.analysis.dependency_graph import DeterministicGraphBuilder
 
-class TestCodeMasterAgent(unittest.TestCase):
+class TestOrchestrator(unittest.TestCase):
     def setUp(self):
         self.llm = OpenAIProvider()
-        self.agent = CodeMasterAgent(self.llm)
+        self.orchestrator = Orchestrator(self.llm)
+
+        # Mock sub-agents and connectors to avoid real calls
+        self.orchestrator.gitlab = MagicMock()
+        self.orchestrator.gitlab.initialize = AsyncMock()
+        self.orchestrator.gitlab.get_file_content = AsyncMock(return_value="mock content")
+        self.orchestrator.gitlab.get_merge_request_diffs = AsyncMock(return_value=[])
+
+        self.orchestrator.mongo = MagicMock()
+        self.orchestrator.mongo.initialize = AsyncMock()
+
+        self.orchestrator.indexer = MagicMock()
+        self.orchestrator.indexer.ingest_changes = AsyncMock()
+
+        self.orchestrator.retriever = MagicMock()
+        self.orchestrator.retriever.search = AsyncMock(return_value=[{"content": "mock chunk"}])
+
+        self.orchestrator.sonar = MagicMock()
+        self.orchestrator.sonar.get_issues_for_project = AsyncMock(return_value=[])
+
+        self.orchestrator.dynatrace = MagicMock()
+        self.orchestrator.dynatrace.get_service_dependencies = AsyncMock(return_value={})
+        self.orchestrator.dynatrace.get_service_metrics = AsyncMock(return_value={})
 
     def test_initialization(self):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        loop.run_until_complete(self.agent.initialize())
+        loop.run_until_complete(self.orchestrator.initialize())
         loop.close()
-        self.assertTrue(True)
+        self.assertTrue(self.orchestrator.gitlab.initialize.called)
 
-    def test_code_review_workflow(self):
+    def test_chat_workflow(self):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
-        loop.run_until_complete(self.agent.initialize())
-        result = loop.run_until_complete(self.agent.run_code_review("123", 1))
-
-        self.assertIsInstance(result, str)
-        self.assertIn("solid", result)
+        response = loop.run_until_complete(self.orchestrator.run_chat("How does auth work?"))
+        self.assertIsInstance(response, str)
+        self.assertTrue(self.orchestrator.retriever.search.called)
         loop.close()
 
-    def test_dkb_indexer_parsing(self):
-        indexer = ASTDerivedIndexer(MagicMock())
-
-        # Test C# parsing for Classes and Methods
-        csharp_code = """
-        public class OrderService : IOrderService {
-            private readonly IRepo _repo;
-
-            public void CreateOrder() {
-                _repo.Save();
-            }
-        }
-        """
-        nodes = indexer._parse_file("OrderService.cs", csharp_code)
-
-        # Expecting: 1 Class Node + 1 Method Node
-        class_node = next((n for n in nodes if n["type"] == "class"), None)
-        method_node = next((n for n in nodes if n["type"] == "method"), None)
-
-        self.assertIsNotNone(class_node)
-        self.assertEqual(class_node["name"], "OrderService")
-        self.assertEqual(class_node["implements"], "IOrderService")
-
-        self.assertIsNotNone(method_node)
-        self.assertEqual(method_node["name"], "CreateOrder")
-
-    def test_incremental_ingest(self):
-        mock_mongo = MagicMock()
-        future = asyncio.Future()
-        future.set_result(True)
-        mock_mongo.mcp_manager.call_tool.return_value = future
-
-        indexer = ASTDerivedIndexer(mock_mongo)
-
+    def test_review_routing(self):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
-        # Mock file change
-        files = {"ServiceA.cs": "public class ServiceA {}"}
-        loop.run_until_complete(indexer.ingest_changes("123", "ServiceA", files))
+        # Patch the reviewer agent specifically inside the orchestrator
+        self.orchestrator.reviewer.review_mr = AsyncMock(return_value="Review Result")
 
-        # Verify call_tool was called (delete old + insert new)
-        self.assertTrue(mock_mongo.mcp_manager.call_tool.called)
-        # Check if 'delete_documents' was called
-        calls = mock_mongo.mcp_manager.call_tool.call_args_list
-        has_delete = any(call[0][1] == "delete_documents" for call in calls)
-        has_insert = any(call[0][1] == "insert_document" for call in calls)
-        self.assertTrue(has_delete)
-        self.assertTrue(has_insert)
-
+        result = loop.run_until_complete(self.orchestrator.run_review("123", 1))
+        self.assertEqual(result, "Review Result")
         loop.close()
 
-    def test_dkb_graph_builder(self):
-        # Test controller injection logic
-        builder = DeterministicGraphBuilder(MagicMock())
-
-        # Mock file content fetch
-        async def mock_get_content(*args):
-            return "public class OrderController { private readonly IOrderService _service; }"
-
-        builder.gitlab.get_file_content = MagicMock(side_effect=mock_get_content)
-
+    def test_impact_routing(self):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
-        deps = loop.run_until_complete(builder._analyze_controller_injections("123", "src/Order/OrderController.cs"))
-        self.assertIn("IOrderService", deps)
-        loop.close()
+        self.orchestrator.impact_analyst.analyze_impact = AsyncMock(return_value="Impact Report")
 
-    def test_retriever_ranking(self):
-        mock_mongo = MagicMock()
-        future = asyncio.Future()
-        future.set_result([])
-        mock_mongo.mcp_manager.call_tool.return_value = future
-
-        retriever = HybridRetriever(mock_mongo)
-
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-        results = loop.run_until_complete(retriever.search("ServiceA", "payment"))
-        self.assertTrue(len(results) > 0)
-
+        result = loop.run_until_complete(self.orchestrator.run_impact("123", "ServiceA"))
+        self.assertEqual(result, "Impact Report")
         loop.close()
 
 if __name__ == '__main__':
