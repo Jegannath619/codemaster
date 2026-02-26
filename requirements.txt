@@ -1,0 +1,9 @@
+mcp
+pydantic
+httpx
+python-dotenv
+openai
+pymongo
+uvicorn
+fastapi
+python-gitlab
