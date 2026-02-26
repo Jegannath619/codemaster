@@ -1,7 +1,7 @@
 # Agentic AI Code Master - Design Document
 
 ## 1. Overview
-The **Agentic AI Code Master** is an intelligent agent designed to analyze microservices codebases (C#, Vue.js, JavaScript), perform code reviews, assess impact, and suggest changes. It implements a **Deterministic AST-Derived Knowledge Graph (DKB)** approach (inspired by **arXiv:2601.08773**) to provide superior reliability, speed, and coverage compared to traditional RAG or LLM-based Knowledge Graphs (LLM-KB).
+The **Agentic AI Code Master** is an intelligent agent designed to analyze microservices codebases (C#, Vue.js, JavaScript), perform code reviews, assess impact, and suggest changes. It implements a **Deterministic AST-Derived Knowledge Graph (DKB)** approach (inspired by **arXiv:2601.08773**) and **Real-Time Codebase Indexing** (validated by **CocoIndex**) to provide superior reliability, speed, and coverage compared to traditional RAG or LLM-based Knowledge Graphs (LLM-KB).
 
 ## 2. Architecture
 
@@ -46,12 +46,13 @@ As demonstrated in **arXiv:2601.08773**, deterministic graph construction outper
 
 ### 2.3 RAG Pipeline (`src/rag/`)
 
-This module manages the "Indexing (Offline)" and "Querying (Runtime)" phases.
+This module manages the "Indexing (Offline)" and "Querying (Runtime)" phases, enhanced with **CocoIndex-style Incremental Updates**.
 
 *   **AST-Derived Indexer (`src/rag/indexer.py`)**:
     *   **Code-Specific Parsing**: Identifies semantic units: Classes, Interfaces, Methods.
     *   **Relationships**: Captures `Implements` and `Extends` relationships.
     *   **Chunking**: Breaks files into logical AST nodes rather than arbitrary text blocks.
+    *   **Incremental Indexing**: When a PR is created, only the changed files are re-indexed. Old chunks for these files are deleted, and new AST nodes are inserted. This ensures real-time index freshness.
     *   **Embedding**: Generates vector embeddings for each node.
     *   **Storage**: Stores nodes in MongoDB with rich metadata (type, name, file path, service).
 
@@ -68,6 +69,7 @@ This module manages the "Indexing (Offline)" and "Querying (Runtime)" phases.
 1.  **Trigger**: User requests review for a specific Merge Request (MR).
 2.  **Analysis**:
     *   Fetch diffs from GitLab.
+    *   **Incremental Update**: Re-index only the changed files to ensure the context is current.
     *   **Graph Build**: Identify affected `Controller` or `Service` nodes.
     *   **Traverse Graph**: Find dependent `Repository` or `Interface` definitions using the deterministic graph.
     *   **Retrieve Context**: Fetch the code for these specific nodes.

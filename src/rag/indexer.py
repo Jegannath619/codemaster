@@ -36,6 +36,26 @@ class ASTDerivedIndexer:
                 {"collection": "rag_chunks", "document": node}
             )
 
+    async def ingest_changes(self, project_id: str, service_name: str, code_files: Dict[str, str]):
+        """
+        Incrementally updates the index for the changed files.
+        Inspired by CocoIndex strategies.
+        """
+        # 1. Delete old chunks for these files
+        for filepath in code_files.keys():
+            await self.mongo.mcp_manager.call_tool(
+                "mongo",
+                "delete_documents",
+                {
+                    "collection": "rag_chunks",
+                    "filter": {"project_id": project_id, "service_name": service_name, "filepath": filepath}
+                }
+            )
+
+        # 2. Ingest new content
+        await self.ingest_service(project_id, service_name, code_files)
+
+
     def _parse_file(self, filepath: str, content: str) -> List[Dict[str, Any]]:
         """
         Splits file content into AST nodes.

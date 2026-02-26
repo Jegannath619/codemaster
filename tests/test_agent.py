@@ -57,6 +57,32 @@ class TestCodeMasterAgent(unittest.TestCase):
         self.assertIsNotNone(method_node)
         self.assertEqual(method_node["name"], "CreateOrder")
 
+    def test_incremental_ingest(self):
+        mock_mongo = MagicMock()
+        future = asyncio.Future()
+        future.set_result(True)
+        mock_mongo.mcp_manager.call_tool.return_value = future
+
+        indexer = ASTDerivedIndexer(mock_mongo)
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        # Mock file change
+        files = {"ServiceA.cs": "public class ServiceA {}"}
+        loop.run_until_complete(indexer.ingest_changes("123", "ServiceA", files))
+
+        # Verify call_tool was called (delete old + insert new)
+        self.assertTrue(mock_mongo.mcp_manager.call_tool.called)
+        # Check if 'delete_documents' was called
+        calls = mock_mongo.mcp_manager.call_tool.call_args_list
+        has_delete = any(call[0][1] == "delete_documents" for call in calls)
+        has_insert = any(call[0][1] == "insert_document" for call in calls)
+        self.assertTrue(has_delete)
+        self.assertTrue(has_insert)
+
+        loop.close()
+
     def test_dkb_graph_builder(self):
         # Test controller injection logic
         builder = DeterministicGraphBuilder(MagicMock())
