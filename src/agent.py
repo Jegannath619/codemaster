@@ -5,6 +5,7 @@ from src.mcp.client import MCPClientManager
 from src.gitlab.connector import GitLabConnector
 from src.db.connector import MongoDBConnector
 from src.analysis.dependency_graph import DependencyGraphBuilder
+from src.analysis.knowledge_base import KnowledgeBase
 from src.analysis.context_builder import ContextBuilder
 
 class CodeMasterAgent:
@@ -16,8 +17,11 @@ class CodeMasterAgent:
         self.mcp_manager = MCPClientManager()
         self.gitlab = GitLabConnector(self.mcp_manager)
         self.mongo = MongoDBConnector(self.mcp_manager)
+
+        # Initialize Analysis Engine
+        self.knowledge_base = KnowledgeBase(self.mongo)
         self.graph_builder = DependencyGraphBuilder(self.gitlab)
-        self.context_builder = ContextBuilder(self.gitlab, self.graph_builder)
+        self.context_builder = ContextBuilder(self.gitlab, self.graph_builder, self.knowledge_base)
 
     async def initialize(self):
         """
@@ -34,7 +38,7 @@ class CodeMasterAgent:
         """
         print(f"[Agent] Starting Code Review for Project {project_id}, MR {mr_iid}...")
 
-        # 1. Build Context
+        # 1. Build Context (includes Graph + KB chunks)
         context = await self.context_builder.build_context(project_id, mr_iid)
 
         # 2. Ask LLM
@@ -45,9 +49,6 @@ class CodeMasterAgent:
 
         # 3. Save Result
         await self.mongo.save_analysis(project_id, mr_iid, {"review": review_comments})
-
-        # 4. Post Comment (Optional)
-        # await self.gitlab.post_comment(project_id, mr_iid, review_comments)
 
         print("[Agent] Review Completed.")
         return review_comments

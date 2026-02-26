@@ -40,24 +40,21 @@ class DependencyGraphBuilder:
         return "UnknownService"
 
     async def _analyze_service_dependencies(self, project_id: str, service_name: str, filepath: str) -> List[str]:
-        dependencies = []
+        dependencies = set()
 
-        # Check for C# Project file
-        # We assume standard structure: src/ServiceA/ServiceA.csproj
+        # 1. Check for C# Project file (.csproj)
         csproj_path = f"src/{service_name}/{service_name}.csproj"
         try:
             content = await self.gitlab.get_file_content(project_id, csproj_path)
             if content:
-                # Simple regex to find package references or project references
-                # <PackageReference Include="ServiceB.Client" ... />
                 matches = re.findall(r'Include="([^"]+)"', content)
                 for match in matches:
                     if "Service" in match or "Client" in match:
-                        dependencies.append(match)
+                        dependencies.add(match)
         except Exception:
             pass # File might not exist
 
-        # Check for Node.js package.json
+        # 2. Check for Node.js package.json
         package_json_path = f"src/{service_name}/package.json"
         try:
             content = await self.gitlab.get_file_content(project_id, package_json_path)
@@ -66,8 +63,64 @@ class DependencyGraphBuilder:
                 deps = data.get("dependencies", {})
                 for dep in deps:
                     if "service" in dep or "client" in dep:
-                        dependencies.append(dep)
+                        dependencies.add(dep)
         except Exception:
             pass
 
-        return list(set(dependencies))
+        # 3. Check for Configuration Files (appsettings.json)
+        # This allows dynamic linking based on URLs or connection strings found in config.
+        appsettings_path = f"src/{service_name}/appsettings.json"
+        try:
+            content = await self.gitlab.get_file_content(project_id, appsettings_path)
+            if content:
+                config_deps = self._parse_appsettings_dependencies(content)
+                dependencies.update(config_deps)
+        except Exception:
+            pass
+
+        return list(dependencies)
+
+    def _parse_appsettings_dependencies(self, content: str) -> Set[str]:
+        """
+        Parses appsettings.json content to find service dependencies.
+        """
+        deps = set()
+        try:
+            data = json.loads(content)
+
+            # recursive search for keys that look like service URLs
+            def search_dict(d):
+                for key, value in d.items():
+                    if isinstance(value, dict):
+                        search_dict(value)
+                    elif isinstance(value, str):
+                        # Heuristic: Check for URLs or specific naming conventions
+                        if "http" in value and ("service" in value.lower() or "api" in value.lower()):
+                            # Extract service name from URL (simplified)
+                            # e.g., "http://service-b:8080" -> "service-b"
+                            match = re.search(r'https?://([^:/]+)', value)
+                            if match:
+                                deps.add(match.group(1))
+
+                    if "ConnectionStrings" in key or "ConnectionString" in key:
+                        # Value might be a string (simple connection string) or nested object in some configs
+                        # but usually key is 'ConnectionStrings' and value is dict of names.
+                        # Here 'value' is passed as the 'search_dict' argument's value, which can be the string itself.
+                        # However, our recursive loop 'search_dict(d)' iterates keys/values.
+                        # When d={'ConnectionStrings': {'MainDb': '...'}}, key='ConnectionStrings', value={'MainDb': '...'}
+                        # The recursive call search_dict({'MainDb': '...'}) will happen.
+                        pass
+
+                # Check current level keys for connection strings if we are inside a 'ConnectionStrings' block (hard to track state recursively simply).
+                # Simplified check: if any string value looks like a connection string.
+                if isinstance(value, str):
+                    if "mongodb://" in value:
+                        deps.add("MongoDB")
+                    if "Server=" in value and "Database=" in value:
+                        deps.add("SQLServer")
+
+            search_dict(data)
+        except json.JSONDecodeError:
+            pass
+
+        return deps

@@ -1,14 +1,16 @@
 from typing import Dict, List, Any
 from src.analysis.dependency_graph import DependencyGraphBuilder
+from src.analysis.knowledge_base import KnowledgeBase
 from src.gitlab.connector import GitLabConnector
 
 class ContextBuilder:
     """
-    Constructs the prompt context for the LLM, integrating dependency information.
+    Constructs the prompt context for the LLM, integrating dependency information and KB chunks.
     """
-    def __init__(self, gitlab: GitLabConnector, graph_builder: DependencyGraphBuilder):
+    def __init__(self, gitlab: GitLabConnector, graph_builder: DependencyGraphBuilder, knowledge_base: KnowledgeBase):
         self.gitlab = gitlab
         self.graph_builder = graph_builder
+        self.knowledge_base = knowledge_base
 
     async def build_context(self, project_id: str, mr_iid: int) -> str:
         """
@@ -33,15 +35,23 @@ class ContextBuilder:
         for service, deps in dependency_map.items():
             context += f"- Service: {service}\n"
             context += f"  Dependencies: {', '.join(deps)}\n"
+
+            # --- ENHANCEMENT: Fetch relevant chunks from KB ---
+            # For each dependency found (via appsettings or package), fetch relevant code snippets (API contracts).
+            for dep in deps:
+                # Assuming 'dep' is a service name or identifiable entity
+                chunks = await self.knowledge_base.retrieve_relevant_chunks(dep, limit=2)
+                if chunks:
+                    context += f"  - [KB] Context from {dep}:\n"
+                    for chunk in chunks:
+                        content_snippet = chunk.get('content', '')[:300].replace('\n', ' ')
+                        context += f"    * {content_snippet}...\n"
+
         context += "\n"
 
         context += "### Changes ###\n"
         for diff in diffs:
             context += f"File: {diff['new_path']}\n"
             context += f"```diff\n{diff['diff']}\n```\n\n"
-
-        # 5. (Optional) Fetch API Contracts of dependencies
-        # In a full implementation, we would loop through 'deps' and fetch their OpenAPI specs.
-        # context += "### API Contracts ###\n..."
 
         return context

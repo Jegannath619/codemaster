@@ -40,24 +40,30 @@ The system follows a modular architecture:
     *   Uses MCP if available, falls back to REST API.
     *   Reads `GITLAB_API_URL` and tokens from environment variables.
 *   **MongoDB Connector (`src/db/`)**: Handles interactions with MongoDB.
-    *   Stores analysis metadata, user preferences, and caching.
+    *   Stores analysis metadata, user preferences, and **Code Chunks (Knowledge Base)**.
     *   Uses MCP or direct driver.
 
 ### 2.2 Analysis Engine ("Graph RAG")
 
-To address the "microservices" challenge, we move beyond simple text chunking.
+To address the "microservices" challenge, we move beyond simple text chunking by combining **Graph Awareness** with **Config-based Linking**.
 
 *   **Dependency Graph Builder (`src/analysis/dependency_graph.py`)**:
-    *   Parses standard project files (`package.json`, `.csproj`, `pom.xml`, `requirements.txt`).
-    *   Identifies internal and external dependencies.
-    *   Maps service-to-service relationships (e.g., Service A depends on Service B via HTTP client).
+    *   **Static Linking**: Parses `package.json`, `.csproj` for package references.
+    *   **Dynamic Linking (Enhanced)**: Parses configuration files like `appsettings.json` (C#), `.env`, or `config.js` to find runtime dependencies (e.g., service URLs, connection strings).
+    *   Maps service-to-service relationships (e.g., Service A calls Service B via HTTP).
+
+*   **Knowledge Base / Chunking (`src/analysis/knowledge_base.py`)**:
+    *   **Chunking Strategy**: Splits source code into semantic chunks (functions/classes).
+    *   **Storage**: Stores chunks in MongoDB (simulated vector store) tagged by service name.
+    *   **Retrieval**: Fetches relevant code snippets based on the dependency graph.
+
 *   **Context Builder (`src/analysis/context_builder.py`)**:
     *   Constructs the prompt context intelligently.
     *   Instead of random chunks, it includes:
         *   The target file/change.
-        *   The API contract of called services.
+        *   **Linked Chunks**: Code from dependent services identified via `appsettings.json`.
         *   Relevant database schemas.
-        *   Shared libraries.
+
 *   **Cross-Service Tracer (`src/analysis/tracer.py`)**:
     *   (Future/Mocked) Static analysis to trace API calls across repositories.
 
@@ -68,17 +74,17 @@ To address the "microservices" challenge, we move beyond simple text chunking.
 2.  **Analysis**:
     *   Fetch diffs from GitLab.
     *   Identify touched files and services.
-    *   Build dependency graph for affected services.
-    *   Retrieve relevant context (upstream/downstream contracts).
+    *   **Graph Build**: Parse `appsettings.json` to find linked services.
+    *   **Retrieve Context**: Fetch relevant chunks from the Knowledge Base for those linked services.
 3.  **Review**:
-    *   LLM analyzes the code with the full context.
+    *   LLM analyzes the code with the full context (Graph + Chunks).
     *   Checks for logic errors, security flaws (cross-service), and style violations.
 4.  **Output**: Structured review comments pushed to GitLab or displayed in CLI.
 
 ### 3.2 Impact Analysis
 1.  **Trigger**: User proposes a change to a specific service/API.
 2.  **Analysis**:
-    *   Identify all services that consume the modified API (reverse dependency lookup).
+    *   Identify all services that consume the modified API (reverse dependency lookup via `appsettings.json`).
     *   Fetch usage examples from dependent services.
 3.  **Report**:
     *   List potentially broken services.

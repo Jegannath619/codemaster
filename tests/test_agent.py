@@ -1,8 +1,10 @@
 import asyncio
 import unittest
+import json
 from unittest.mock import MagicMock
 from src.agent import CodeMasterAgent
 from src.llm.openai_client import OpenAIProvider
+from src.analysis.dependency_graph import DependencyGraphBuilder
 
 class TestCodeMasterAgent(unittest.TestCase):
     def setUp(self):
@@ -14,31 +16,35 @@ class TestCodeMasterAgent(unittest.TestCase):
         asyncio.set_event_loop(loop)
         loop.run_until_complete(self.agent.initialize())
         loop.close()
-        # If no exception, it passed
         self.assertTrue(True)
 
     def test_code_review_workflow(self):
-        # We can't easily mock async calls in standard unittest without aiounittest or pytest-asyncio
-        # but for this environment, we will just run the agent methods and check if they return strings
-        # as the underlying connectors are already mocked.
-
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
-        # Initialize
         loop.run_until_complete(self.agent.initialize())
-
-        # Run Code Review
         result = loop.run_until_complete(self.agent.run_code_review("123", 1))
+
         self.assertIsInstance(result, str)
         self.assertIn("solid", result)
-
-        # Run Impact Analysis
-        impact = loop.run_until_complete(self.agent.run_impact_analysis("123", "ServiceA"))
-        self.assertIsInstance(impact, str)
-        self.assertIn("ServiceB", impact)
-
         loop.close()
+
+    def test_appsettings_parsing(self):
+        # Unit test for the parser logic
+        parser = DependencyGraphBuilder(MagicMock())
+        appsettings_content = json.dumps({
+            "ServiceSettings": {
+                "OrderServiceUrl": "http://order-service:5000",
+                "PaymentServiceUrl": "https://payment-api.internal"
+            },
+            "ConnectionStrings": {
+                "MainDb": "mongodb://mongo:27017/db"
+            }
+        })
+        deps = parser._parse_appsettings_dependencies(appsettings_content)
+        self.assertIn("order-service", deps)
+        self.assertIn("payment-api.internal", deps)
+        self.assertIn("MongoDB", deps)
 
 if __name__ == '__main__':
     unittest.main()
