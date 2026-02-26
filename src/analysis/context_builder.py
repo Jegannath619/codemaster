@@ -1,5 +1,5 @@
 from typing import Dict, List, Any
-from src.analysis.dependency_graph import DependencyGraphBuilder
+from src.analysis.dependency_graph import DeterministicGraphBuilder
 from src.rag.retriever import HybridRetriever
 from src.gitlab.connector import GitLabConnector
 
@@ -7,7 +7,7 @@ class ContextBuilder:
     """
     Constructs the prompt context for the LLM, integrating dependency information and Hybrid RAG chunks.
     """
-    def __init__(self, gitlab: GitLabConnector, graph_builder: DependencyGraphBuilder, retriever: HybridRetriever):
+    def __init__(self, gitlab: GitLabConnector, graph_builder: DeterministicGraphBuilder, retriever: HybridRetriever):
         self.gitlab = gitlab
         self.graph_builder = graph_builder
         self.retriever = retriever

@@ -2,144 +2,159 @@ import re
 from typing import List, Dict, Any
 from src.db.connector import MongoDBConnector
 
-class CodeIndexer:
+class ASTDerivedIndexer:
     """
-    Handles parsing, chunking, and embedding of code files.
+    Handles parsing, chunking, and embedding of code files using AST-derived logic.
+    Simulates Tree-sitter behavior using regex to identify Classes, Interfaces, and Methods.
     """
     def __init__(self, mongo: MongoDBConnector):
         self.mongo = mongo
 
     async def ingest_service(self, project_id: str, service_name: str, code_files: Dict[str, str]):
         """
-        Parses code files into semantic chunks and stores them.
+        Parses code files into semantic AST nodes and stores them.
         """
-        chunks = []
+        nodes = []
         for filepath, content in code_files.items():
-            file_chunks = self._chunk_file(filepath, content)
-            for i, chunk_data in enumerate(file_chunks):
+            file_nodes = self._parse_file(filepath, content)
+            for i, node_data in enumerate(file_nodes):
                 # Enrich with metadata
-                chunk_data.update({
+                node_data.update({
                     "project_id": project_id,
                     "service_name": service_name,
                     "filepath": filepath,
-                    "chunk_index": i,
-                    "vector": self._create_embedding(chunk_data["content"])
+                    "node_index": i,
+                    "vector": self._create_embedding(node_data["content"])
                 })
-                chunks.append(chunk_data)
+                nodes.append(node_data)
 
         # Store in Mongo
-        for chunk in chunks:
+        for node in nodes:
             await self.mongo.mcp_manager.call_tool(
                 "mongo",
                 "insert_document",
-                {"collection": "rag_chunks", "document": chunk}
+                {"collection": "rag_chunks", "document": node}
             )
 
-    def _chunk_file(self, filepath: str, content: str) -> List[Dict[str, Any]]:
+    def _parse_file(self, filepath: str, content: str) -> List[Dict[str, Any]]:
         """
-        Splits file content into logical units (functions/classes) based on file extension.
-        Simulates Tree-sitter behavior using regex.
+        Splits file content into AST nodes.
         """
         if filepath.endswith(".cs"):
             return self._parse_csharp(content)
         elif filepath.endswith(".js") or filepath.endswith(".ts") or filepath.endswith(".vue"):
             return self._parse_javascript(content)
         else:
-            # Fallback: Paragraph chunking
             return [{"type": "text", "name": "block", "content": c} for c in content.split('\n\n') if len(c.strip()) > 20]
 
     def _parse_csharp(self, content: str) -> List[Dict[str, Any]]:
         """
-        Extracts C# methods using Regex.
-        Matches: [access modifier] [return type] [MethodName](args) { ... }
+        Extracts C# Classes, Interfaces, and Methods.
         """
-        chunks = []
-        # Simplified regex for C# method signature.
-        # Note: Balancing braces with regex is hard/impossible, this is a heuristic approximation.
-        # We assume methods are separated by newlines and indentation is standard.
+        nodes = []
+        lines = content.split('\n')
+
+        # 1. Class/Interface Definition
+        # public class OrderService : IOrderService
+        class_pattern = re.compile(r'(public|internal)\s+(class|interface)\s+(\w+)\s*(?::\s*([\w, ]+))?')
+
+        # 2. Method Definition
         method_pattern = re.compile(r'(public|private|protected|internal)\s+[\w<>]+\s+(\w+)\s*\(.*?\)\s*\{')
 
-        lines = content.split('\n')
-        current_chunk = []
+        current_node = []
         current_name = "unknown"
-        in_method = False
+        current_type = "unknown"
+        in_block = False
         brace_count = 0
 
         for line in lines:
-            if not in_method:
-                match = method_pattern.search(line)
-                if match:
-                    in_method = True
-                    current_name = match.group(2)
-                    current_chunk = [line]
+            # Check for Class/Interface start
+            class_match = class_pattern.search(line)
+            if class_match and not in_block:
+                implements = class_match.group(4)
+                if implements:
+                    implements = implements.strip()
+
+                nodes.append({
+                    "type": class_match.group(2), # class or interface
+                    "name": class_match.group(3),
+                    "implements": implements if implements else "",
+                    "content": line # Just the definition line for the high-level node
+                })
+                # We don't block-capture classes entirely to avoid huge chunks,
+                # instead we capture methods inside them as separate nodes.
+
+            if not in_block:
+                method_match = method_pattern.search(line)
+                if method_match:
+                    in_block = True
+                    current_type = "method"
+                    current_name = method_match.group(2)
+                    current_node = [line]
                     brace_count = line.count('{') - line.count('}')
-                else:
-                    # Keep accumulating class-level context or comments? For now, ignore.
-                    pass
             else:
-                current_chunk.append(line)
+                current_node.append(line)
                 brace_count += line.count('{') - line.count('}')
                 if brace_count <= 0:
-                    in_method = False
-                    chunks.append({
-                        "type": "method",
+                    in_block = False
+                    nodes.append({
+                        "type": current_type,
                         "name": current_name,
-                        "content": "\n".join(current_chunk)
+                        "content": "\n".join(current_node)
                     })
-                    current_chunk = []
+                    current_node = []
 
-        return chunks
+        return nodes
 
     def _parse_javascript(self, content: str) -> List[Dict[str, Any]]:
         """
-        Extracts JS functions.
-        Matches: function name() or const name = () =>
+        Extracts JS functions and Classes.
         """
-        chunks = []
-        # Heuristic for JS/TS functions
+        nodes = []
         function_pattern = re.compile(r'(function\s+(\w+)|const\s+(\w+)\s*=\s*(\(.*?\)|async\s*\(.*?\))\s*=>)')
+        class_pattern = re.compile(r'class\s+(\w+)')
 
         lines = content.split('\n')
-        current_chunk = []
+        current_node = []
         current_name = "unknown"
-        in_function = False
+        in_block = False
         brace_count = 0
 
         for line in lines:
-            if not in_function:
-                match = function_pattern.search(line)
-                if match:
-                    in_function = True
-                    current_name = match.group(2) or match.group(3)
-                    current_chunk = [line]
+            if not in_block:
+                # Check for Class
+                class_match = class_pattern.search(line)
+                if class_match:
+                    nodes.append({"type": "class", "name": class_match.group(1), "content": line})
+
+                func_match = function_pattern.search(line)
+                if func_match:
+                    in_block = True
+                    current_name = func_match.group(2) or func_match.group(3)
+                    current_node = [line]
                     brace_count = line.count('{') - line.count('}')
-                    # Single line arrow function check
                     if "=>" in line and "{" not in line:
-                         chunks.append({"type": "function", "name": current_name, "content": line})
-                         in_function = False
-                         current_chunk = []
-                else:
-                    pass
+                         nodes.append({"type": "function", "name": current_name, "content": line})
+                         in_block = False
+                         current_node = []
             else:
-                current_chunk.append(line)
+                current_node.append(line)
                 brace_count += line.count('{') - line.count('}')
                 if brace_count <= 0:
-                    in_function = False
-                    chunks.append({
+                    in_block = False
+                    nodes.append({
                         "type": "function",
                         "name": current_name,
-                        "content": "\n".join(current_chunk)
+                        "content": "\n".join(current_node)
                     })
-                    current_chunk = []
+                    current_node = []
 
-        return chunks
+        return nodes
 
     def _create_embedding(self, text: str) -> List[float]:
         """
         Creates a vector embedding for the text.
         """
-        # Mock embedding: deterministic hash-based vector for reproducibility in tests
         import hashlib
         hash_val = int(hashlib.md5(text.encode()).hexdigest(), 16)
-        # Create a tiny mock vector of size 5
         return [float((hash_val >> i) & 0xFF) / 255.0 for i in range(0, 50, 10)]

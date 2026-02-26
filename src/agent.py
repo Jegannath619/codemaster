@@ -4,8 +4,8 @@ from src.llm.base import LLMProvider
 from src.mcp.client import MCPClientManager
 from src.gitlab.connector import GitLabConnector
 from src.db.connector import MongoDBConnector
-from src.analysis.dependency_graph import DependencyGraphBuilder
-from src.rag.indexer import CodeIndexer
+from src.analysis.dependency_graph import DeterministicGraphBuilder
+from src.rag.indexer import ASTDerivedIndexer
 from src.rag.retriever import HybridRetriever
 from src.analysis.context_builder import ContextBuilder
 
@@ -19,12 +19,12 @@ class CodeMasterAgent:
         self.gitlab = GitLabConnector(self.mcp_manager)
         self.mongo = MongoDBConnector(self.mcp_manager)
 
-        # Initialize RAG Pipeline
-        self.rag_indexer = CodeIndexer(self.mongo)
+        # Initialize RAG Pipeline (DKB Architecture)
+        self.rag_indexer = ASTDerivedIndexer(self.mongo)
         self.rag_retriever = HybridRetriever(self.mongo)
 
-        # Initialize Analysis Engine
-        self.graph_builder = DependencyGraphBuilder(self.gitlab)
+        # Initialize Analysis Engine (Deterministic Graph)
+        self.graph_builder = DeterministicGraphBuilder(self.gitlab)
         self.context_builder = ContextBuilder(self.gitlab, self.graph_builder, self.rag_retriever)
 
     async def initialize(self):
@@ -38,7 +38,7 @@ class CodeMasterAgent:
 
     async def ingest_codebase(self, project_id: str, service_name: str, files: Dict[str, str]):
         """
-        Trigger for Offline Indexing phase.
+        Trigger for Offline Indexing phase (AST-Derived).
         """
         print(f"[Agent] Indexing service: {service_name}...")
         await self.rag_indexer.ingest_service(project_id, service_name, files)
@@ -46,7 +46,7 @@ class CodeMasterAgent:
 
     async def run_code_review(self, project_id: str, mr_iid: int):
         """
-        Performs a code review for a specific Merge Request using RAG.
+        Performs a code review for a specific Merge Request using DKB-RAG.
         """
         print(f"[Agent] Starting Code Review for Project {project_id}, MR {mr_iid}...")
 
@@ -67,7 +67,7 @@ class CodeMasterAgent:
 
     async def run_impact_analysis(self, project_id: str, service_name: str):
         """
-        Analyzes the impact of changing a specific service.
+        Analyzes the impact of changing a specific service using Bidirectional Graph Traversal.
         """
         print(f"[Agent] Analyzing impact for service: {service_name}...")
         # Mock logic for impact analysis

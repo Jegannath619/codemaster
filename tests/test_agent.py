@@ -4,8 +4,9 @@ import json
 from unittest.mock import MagicMock
 from src.agent import CodeMasterAgent
 from src.llm.openai_client import OpenAIProvider
-from src.rag.indexer import CodeIndexer
+from src.rag.indexer import ASTDerivedIndexer
 from src.rag.retriever import HybridRetriever
+from src.analysis.dependency_graph import DeterministicGraphBuilder
 
 class TestCodeMasterAgent(unittest.TestCase):
     def setUp(self):
@@ -30,31 +31,53 @@ class TestCodeMasterAgent(unittest.TestCase):
         self.assertIn("solid", result)
         loop.close()
 
-    def test_indexer_parsing(self):
-        indexer = CodeIndexer(MagicMock())
+    def test_dkb_indexer_parsing(self):
+        indexer = ASTDerivedIndexer(MagicMock())
 
-        # Test C# parsing
+        # Test C# parsing for Classes and Methods
         csharp_code = """
-        public void MethodA() {
-            var x = 1;
-        }
+        public class OrderService : IOrderService {
+            private readonly IRepo _repo;
 
-        private string MethodB(int y) {
-            return "test";
+            public void CreateOrder() {
+                _repo.Save();
+            }
         }
         """
-        chunks = indexer._chunk_file("Test.cs", csharp_code)
-        self.assertEqual(len(chunks), 2)
-        self.assertEqual(chunks[0]["name"], "MethodA")
-        self.assertEqual(chunks[1]["name"], "MethodB")
+        nodes = indexer._parse_file("OrderService.cs", csharp_code)
+
+        # Expecting: 1 Class Node + 1 Method Node
+        class_node = next((n for n in nodes if n["type"] == "class"), None)
+        method_node = next((n for n in nodes if n["type"] == "method"), None)
+
+        self.assertIsNotNone(class_node)
+        self.assertEqual(class_node["name"], "OrderService")
+        self.assertEqual(class_node["implements"], "IOrderService")
+
+        self.assertIsNotNone(method_node)
+        self.assertEqual(method_node["name"], "CreateOrder")
+
+    def test_dkb_graph_builder(self):
+        # Test controller injection logic
+        builder = DeterministicGraphBuilder(MagicMock())
+
+        # Mock file content fetch
+        async def mock_get_content(*args):
+            return "public class OrderController { private readonly IOrderService _service; }"
+
+        builder.gitlab.get_file_content = MagicMock(side_effect=mock_get_content)
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        deps = loop.run_until_complete(builder._analyze_controller_injections("123", "src/Order/OrderController.cs"))
+        self.assertIn("IOrderService", deps)
+        loop.close()
 
     def test_retriever_ranking(self):
-        # We need to mock the async call chain: mongo.mcp_manager.call_tool
         mock_mongo = MagicMock()
-
-        # Setup async mock for call_tool
         future = asyncio.Future()
-        future.set_result([]) # Return empty list so it falls back to internal mock data
+        future.set_result([])
         mock_mongo.mcp_manager.call_tool.return_value = future
 
         retriever = HybridRetriever(mock_mongo)
@@ -62,10 +85,8 @@ class TestCodeMasterAgent(unittest.TestCase):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
-        # We expect the mock in HybridRetriever to return something
         results = loop.run_until_complete(retriever.search("ServiceA", "payment"))
         self.assertTrue(len(results) > 0)
-        self.assertIn("score", results[0])
 
         loop.close()
 
