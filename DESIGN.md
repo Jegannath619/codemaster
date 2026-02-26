@@ -12,25 +12,18 @@ The system follows a modular architecture:
 |  CLI Interface   | <--> |   Agent Core   | <--> |   LLM Provider    |
 |   (main.py)      |      | (src/agent.py) |      | (src/llm/base.py) |
 +------------------+      +-------+--------+      +-------------------+
+                                  ^
                                   |
-                                  v
                         +--------------------+
-                        |   Analysis Engine  |
-                        | (src/analysis/*)   |
-                        |     (src/rag/*)    |
-                        +---------+----------+
-                                  |
-            +---------------------+---------------------+
-            |                     |                     |
-    +-------v-------+     +-------v-------+     +-------v-------+
-    | GitLab Client |     | Mongo Client  |     |  Local FS     |
-    | (src/gitlab/) |     | (src/db/)     |     | (src/utils/)  |
-    +---------------+     +---------------+     +---------------+
+                        |   Webhook Server   |  <-- GitLab Webhooks
+                        | (src/webhook_server.py) |
+                        +--------------------+
 ```
 
 ### 2.1 Core Components
 
 *   **Agent Core (`src/agent.py`)**: The central orchestrator. It receives user intents (e.g., "Review this PR"), plans the execution steps, invokes analysis tools, and synthesizes the final response using the LLM.
+*   **Webhook Server (`src/webhook_server.py`)**: A FastAPI service that listens for GitLab events (Push, Merge Request) to trigger real-time actions.
 *   **LLM Abstraction (`src/llm/`)**: A flexible interface to switch between models (OpenAI, Anthropic, Local).
 *   **MCP Client Manager (`src/mcp/`)**: Manages connections to MCP servers (GitLab, Mongo).
 
@@ -52,7 +45,7 @@ This module manages the "Indexing (Offline)" and "Querying (Runtime)" phases, en
     *   **Code-Specific Parsing**: Identifies semantic units: Classes, Interfaces, Methods.
     *   **Relationships**: Captures `Implements` and `Extends` relationships.
     *   **Chunking**: Breaks files into logical AST nodes rather than arbitrary text blocks.
-    *   **Incremental Indexing**: When a PR is created, only the changed files are re-indexed. Old chunks for these files are deleted, and new AST nodes are inserted. This ensures real-time index freshness.
+    *   **Incremental Indexing**: When a PR is created or code is pushed, only the changed files are re-indexed. Old chunks for these files are deleted, and new AST nodes are inserted. This ensures real-time index freshness.
     *   **Embedding**: Generates vector embeddings for each node.
     *   **Storage**: Stores nodes in MongoDB with rich metadata (type, name, file path, service).
 
@@ -65,11 +58,19 @@ This module manages the "Indexing (Offline)" and "Querying (Runtime)" phases, en
 
 ## 3. Workflows
 
-### 3.1 Code Review (Enhanced with DKB)
-1.  **Trigger**: User requests review for a specific Merge Request (MR).
+### 3.1 Real-Time Code Indexing (Webhook)
+1.  **Trigger**: GitLab Push Event (Developer commits code).
+2.  **Action**: Webhook Server receives payload.
+3.  **Indexing**:
+    *   Extract modified files from the payload.
+    *   Call `Agent.ingest_changes(project_id, service_name, files)`.
+    *   Agent updates the RAG Index incrementally (Delete Old -> Insert New).
+
+### 3.2 Code Review (Enhanced with DKB)
+1.  **Trigger**: User requests review for a specific Merge Request (MR) or via Webhook (MR Event).
 2.  **Analysis**:
     *   Fetch diffs from GitLab.
-    *   **Incremental Update**: Re-index only the changed files to ensure the context is current.
+    *   **Incremental Update**: Ensure index is fresh.
     *   **Graph Build**: Identify affected `Controller` or `Service` nodes.
     *   **Traverse Graph**: Find dependent `Repository` or `Interface` definitions using the deterministic graph.
     *   **Retrieve Context**: Fetch the code for these specific nodes.
@@ -78,7 +79,7 @@ This module manages the "Indexing (Offline)" and "Querying (Runtime)" phases, en
     *   Checks for logic errors, security flaws (cross-service), and style violations.
 4.  **Output**: Structured review comments.
 
-### 3.2 Impact Analysis (Bidirectional)
+### 3.3 Impact Analysis (Bidirectional)
 1.  **Trigger**: User proposes a change to a specific service/API.
 2.  **Analysis**:
     *   Identify the target node (Service/Interface).
@@ -88,7 +89,7 @@ This module manages the "Indexing (Offline)" and "Querying (Runtime)" phases, en
     *   List potentially broken services.
     *   Highlight necessary updates in consumers.
 
-### 3.3 Suggest Changes
+### 3.4 Suggest Changes
 1.  **Trigger**: "Refactor Service A to use the new Auth API".
 2.  **Execution**:
     *   Agent identifies all call sites using the DKB.
@@ -103,6 +104,7 @@ Configuration is handled via environment variables (`.env`):
 *   `MONGODB_URI`
 *   `LLM_API_KEY`
 *   `LLM_MODEL`
+*   `WEBHOOK_SECRET` (for verifying GitLab payloads)
 
 ## 5. Security & Principles
 *   **Least Privilege**: Only request necessary scopes for GitLab/Mongo.

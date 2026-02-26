@@ -1,0 +1,66 @@
+import asyncio
+import unittest
+from unittest.mock import MagicMock, AsyncMock, patch
+from fastapi.testclient import TestClient
+from src.webhook_server import app, handle_webhook
+
+class TestWebhookServer(unittest.TestCase):
+    def setUp(self):
+        # Patch the agent in the webhook server module
+        self.agent_patcher = patch("src.webhook_server.agent")
+        self.mock_agent = self.agent_patcher.start()
+
+        # Configure mock agent behaviors
+        self.mock_agent.gitlab.get_file_content = AsyncMock(return_value="public class Mock {}")
+        self.mock_agent.rag_indexer.ingest_changes = AsyncMock()
+        self.mock_agent.run_code_review = AsyncMock()
+
+        self.client = TestClient(app)
+
+    def tearDown(self):
+        self.agent_patcher.stop()
+
+    def test_webhook_push_event(self):
+        payload = {
+            "object_kind": "push",
+            "project_id": 123,
+            "checkout_sha": "abc1234",
+            "commits": [
+                {
+                    "added": ["src/ServiceA/NewFile.cs"],
+                    "modified": ["src/ServiceA/OldFile.cs"],
+                    "removed": []
+                }
+            ]
+        }
+        headers = {"X-Gitlab-Token": "dummy_secret"}
+
+        response = self.client.post("/webhook", json=payload, headers=headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "processing")
+
+        # Note: BackgroundTasks are hard to test synchronously with TestClient without explicitly triggering them.
+        # However, we can verifying the logic by calling the handler directly or using Starlette's TestClient context.
+        # For this unit test, we just check the endpoint logic.
+
+    def test_webhook_mr_event(self):
+        payload = {
+            "object_kind": "merge_request",
+            "project": {"id": 123},
+            "object_attributes": {
+                "iid": 1,
+                "action": "open"
+            }
+        }
+        headers = {"X-Gitlab-Token": "dummy_secret"}
+
+        response = self.client.post("/webhook", json=payload, headers=headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["message"], "Merge Request queued for review")
+
+    def test_webhook_invalid_token(self):
+        response = self.client.post("/webhook", json={}, headers={"X-Gitlab-Token": "wrong"})
+        self.assertEqual(response.status_code, 403)
+
+if __name__ == '__main__':
+    unittest.main()
